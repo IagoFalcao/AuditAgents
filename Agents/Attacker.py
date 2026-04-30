@@ -38,7 +38,7 @@ class Attacker:
         self.prompts = self.load_prompts()
 
 
-    def load_prompts(self,directory = "prompts/attacker/prompt"):
+    def load_prompts(self,directory = "Agents/prompt"):
         """
         This funtion reads the info from the category at the json file and
         adds the current category info to the object, loads the prompts and returns it, and 
@@ -46,9 +46,11 @@ class Attacker:
         """
         
         os.makedirs(directory, exist_ok=True)
-
+        #print(f"dir: {directory}")
+        #print(os.listdir(directory))
         prompts = dict()
         for filename in os.listdir(directory):
+            #print(f"Filenames: {filename}")
             if filename.endswith(".json"):
                 filepath = os.path.join(directory,filename)
             try:
@@ -121,6 +123,132 @@ class Attacker:
                 ans_to_model[str(i)] = k
         return ans_list, ans_to_model
     
-    
+
+    def call_llm_agent_api(self, prompt_question: list) -> str:
+        """
+        Build prompt
+            ↓
+        Connect to Ollama
+            ↓
+        Send prompt to model
+            ↓
+        Generate response
+            ↓
+        Extract text
+            ↓
+        Clean text
+            ↓
+        Return result
+        """
+        try:
+            client = OpenAI(
+                base_url="http://localhost:11434/v1",
+                api_key="ollama"
+            )
+
+            completion = client.chat.completions.create(
+                model="qwen3:4b",
+                messages=prompt_question,
+                #Controls randomness (0 = deterministic)
+                temperature=0,
+                # Controls token sampling distribution
+                top_p=1,
+                #Forces valid json output
+                response_format={"type": "json_object"}
+            )
+            #print(completion)
+
+            ans = completion.choices[0].message.content
+            return ans.strip()
+
+        except Exception as e:
+            print(f"Error at LLM API: {e}")
+            raise
         
-    
+    def query(self):
+        """
+        Preparates a query, with the prompts, and the configurations 
+        to the response obtained of the llm
+        """
+        """
+        Gather all feature questions
+                ↓
+        Ask the LLM to answer Yes/No for each
+                ↓
+        Compare answers against known vulnerability patterns
+                ↓
+        Identify candidate vulnerability categories
+                ↓
+        Run confirmation prompts for each candidate
+                ↓
+        Return final list of confirmed vulnerabilities
+        """
+        res = list()
+
+        try:
+            prompt_message = list()
+            prompt_task = self.task_desc
+            prompt_message.append({"role" : "system","content": prompt_task})
+            prompt_feature = self.feature_matching()
+
+            prompt_message.append({"role":"user", "content" : prompt_feature})
+            #Ask the llm y/n to each vulnerability
+            answer_feature = self.call_llm_agent_api(prompt_message)
+
+            prompt_message.pop()
+            json_answer_feature = json.loads(answer_feature)
+            #Known ans
+            vul_ans, ans_to_model = self.get_ans_list()
+
+            #Flags for each vulnerability
+            flag_price = False
+            flag_calculate = False
+            flag_privilege = False
+            flag_control = False
+
+            #track each vul was found
+            for i in range(1,14):
+                if json_answer_feature[str(i)] == vul_ans[i]:
+                    if ans_to_model[str(i)] == "Incorrect Control Mechanism":
+                        flag_control = True
+                    elif ans_to_model[str(i)] == "Insecure Calculating Logic":
+                        flag_calculate = True
+                    elif ans_to_model[str(i)] == "Price Oracle Manipulation":
+                        flag_price = True
+                    elif ans_to_model[str(i)] == "Unauthorized Behavior":
+                        flag_privilege = True
+            #Confirmation run for each vulnerability found in the analisys
+            if flag_control: 
+                prompt_model = self.category_to_model["Incorrect Control Mechanism"]
+                prompt_message.append({"role" : "user", "content" : prompt_model})
+                answer_model = self.call_llm_agent_api(prompt_message)
+                if answer_model == "Yes":
+                    res.append("Incorrect Control Mechanism")
+                prompt_message.pop()
+            if flag_calculate:
+                prompt_model = self.category2model["Insecure_Calculating_Logic"]
+                prompt_message.append({"role": "user", "content": prompt_model})
+                answer_model = self.call_LLMAPI(prompt_message)
+                if answer_model == "Yes":
+                    res.append("Insecure Calculating Logic")
+                prompt_message.pop()
+
+            if flag_price:
+                prompt_model = self.category2model["Price Oracle Manipulation"]
+                prompt_message.append({"role": "user", "content": prompt_model})
+                answer_model = self.call_LLMAPI(prompt_message)
+                if answer_model == "Yes":
+                    res.append("Price Oracle Manipulation")
+                prompt_message.pop()
+
+            if flag_privilege:
+                prompt_model = self.category2model["Unauthorized Behavior"]
+                prompt_message.append({"role": "user", "content": prompt_model})
+                answer_model = self.call_LLMAPI(prompt_message)
+                if answer_model == "Yes":
+                    res.append("Unauthorized Behavior")
+                prompt_message.pop()
+        except Exception as e:
+            print(e)
+        
+        return res
