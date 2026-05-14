@@ -1,4 +1,5 @@
 import os,json 
+import openai
 from openai import OpenAI
 class Attacker:
     """
@@ -143,7 +144,9 @@ class Attacker:
         try:
             client = OpenAI(
                 base_url="http://localhost:11434/v1",
-                api_key="ollama"
+                api_key="ollama",
+                timeout=60.0,
+                max_retries=5
             )
 
             completion = client.chat.completions.create(
@@ -161,6 +164,12 @@ class Attacker:
             ans = completion.choices[0].message.content
             return ans.strip()
 
+        except openai.APIError as e:
+            print(f"OpenAI API returned an API error: {e}")
+            raise
+        except openai.APIConnectionError as e:
+            print(f"Falied to connect to OpenAI API: {e}")
+            raise
         except Exception as e:
             print(f"Error at LLM API: {e}")
             raise
@@ -226,25 +235,25 @@ class Attacker:
                     res.append("Incorrect Control Mechanism")
                 prompt_message.pop()
             if flag_calculate:
-                prompt_model = self.category2model["Insecure_Calculating_Logic"]
+                prompt_model = self.category_to_model["Insecure_Calculating_Logic"]
                 prompt_message.append({"role": "user", "content": prompt_model})
-                answer_model = self.call_LLMAPI(prompt_message)
+                answer_model = self.call_llm_agent_api(prompt_message)
                 if answer_model == "Yes":
                     res.append("Insecure Calculating Logic")
                 prompt_message.pop()
 
             if flag_price:
-                prompt_model = self.category2model["Price Oracle Manipulation"]
+                prompt_model = self.category_to_model["Price Oracle Manipulation"]
                 prompt_message.append({"role": "user", "content": prompt_model})
-                answer_model = self.call_LLMAPI(prompt_message)
+                answer_model = self.call_llm_agent_api(prompt_message)
                 if answer_model == "Yes":
                     res.append("Price Oracle Manipulation")
                 prompt_message.pop()
 
             if flag_privilege:
-                prompt_model = self.category2model["Unauthorized Behavior"]
+                prompt_model = self.category_to_model["Unauthorized Behavior"]
                 prompt_message.append({"role": "user", "content": prompt_model})
-                answer_model = self.call_LLMAPI(prompt_message)
+                answer_model = self.call_llm_agent_api(prompt_message)
                 if answer_model == "Yes":
                     res.append("Unauthorized Behavior")
                 prompt_message.pop()
