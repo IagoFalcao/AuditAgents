@@ -5,7 +5,7 @@ on:
     branches: [fuzzing]
     paths:
       - "src/compiler.py"
-      - "contracts/3/**"
+      - "contracts/**"
       - "contracts/13/**"
       - "contracts/22/**"
       - "hhat/**"
