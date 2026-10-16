@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.0;
+import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import "./IncentiveDistribution.sol";
@@ -30,7 +31,7 @@ contract Admin is RoleAware, Ownable {
         address _lockedMFI,
         address lockedMFIDelegate,
         address _roles
-    ) RoleAware(_roles) Ownable() {
+    ) RoleAware(_roles) Ownable(msg.sender) {
         MFI = _MFI;
         maintenanceStakePerBlock = 1 ether;
         lockedMFI = _lockedMFI;
