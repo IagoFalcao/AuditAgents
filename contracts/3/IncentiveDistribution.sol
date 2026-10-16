@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.0;
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./RoleAware.sol";
@@ -28,7 +29,7 @@ contract IncentiveDistribution is RoleAware, Ownable {
         address _MFI,
         uint256 startingDailyDistributionWithoutDecimals,
         address _roles
-    ) RoleAware(_roles) Ownable() {
+    ) RoleAware(_roles) Ownable(msg.sender) {
         MFI = _MFI;
         currentDailyDistribution =
             startingDailyDistributionWithoutDecimals *
