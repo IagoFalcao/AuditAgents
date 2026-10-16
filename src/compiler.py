@@ -205,7 +205,7 @@ def main() -> int:
             if solc_command:
                 command = [solc_command, "--base-path", str(ROOT), "--include-path",
                            str(hardhat_dir / "node_modules"), "--abi", "--bin",
-                           "--ast-compact-json", "-o", str(artifacts_dir / f"solc_{index:03d}"),
+                           "-o", str(artifacts_dir / f"solc_{index:03d}"),
                            str(source)]
                 fallback = run_command(command, ROOT, args.timeout)
                 record["compiler"] = "solc" if Path(solc_command).name == "solc" else "solcjs"
@@ -220,8 +220,36 @@ def main() -> int:
                                               f"Compiler exited with code {fallback['returncode']}"})
                 generated_dir = artifacts_dir / f"solc_{index:03d}"
                 if generated_dir.exists():
+                    generated_files = [p for p in sorted(generated_dir.rglob("*")) if p.is_file()]
+                    # solc/solcjs CLI emits ABI and bytecode as separate files. Consolidate
+                    # matching outputs into JSON artifacts for downstream analysis.
+                    abi_files = [p for p in generated_files if p.suffix == ".abi"]
+                    for abi_path in abi_files:
+                        stem = abi_path.name[:-4]
+                        bin_path = next((p for p in generated_files if p.name == stem + ".bin"), None)
+                        try:
+                            abi = json.loads(abi_path.read_text(encoding="utf-8"))
+                            bytecode = bin_path.read_text(encoding="utf-8").strip() if bin_path else ""
+                            artifact_json = {
+                                "contractName": stem.split("_")[-1],
+                                "sourceName": repo_relative,
+                                "abi": abi,
+                                "bytecode": {"object": bytecode},
+                                "metadata": None,
+                                "ast": None,
+                                "compiler": {"name": record["compiler"], "mode": "cli-output"},
+                                "auditagents": {
+                                    "source_path": repo_relative,
+                                    "compiled_by": record["compiler"],
+                                    "note": "CLI fallback does not expose AST/metadata; unavailable fields are null."
+                                }
+                            }
+                            consolidated = generated_dir / (re.sub(r"[^A-Za-z0-9_.-]+", "_", stem) + ".json")
+                            write_json(consolidated, artifact_json)
+                        except (OSError, json.JSONDecodeError) as exc:
+                            record["errors"].append({"message": f"Could not consolidate compiler output {abi_path.name}: {exc}"})
                     record["artifacts"] = [
-                        str(p.relative_to(output_dir)) for p in sorted(generated_dir.rglob("*")) if p.is_file()
+                        str(p.relative_to(output_dir)) for p in sorted(generated_dir.rglob("*.json"))
                     ]
                 if fallback["returncode"] == 0 and record["artifacts"]:
                     record["status"] = "success"
