@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -207,7 +208,7 @@ def main() -> int:
                     key = current.relative_to(module_root).as_posix()
                 source_text = current.read_text(encoding="utf-8", errors="replace")
                 all_sources[key] = {"content": source_text}
-                for imported in re.findall(r"""import\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']\s*;""", source_text):
+                for imported in re.findall(r"""import\s+(?:[^;]*?\s+from\s+)?["']([^"']+)["']\s*;""", source_text):
                     if imported.startswith("."):
                         candidate = (current.parent / imported).resolve()
                         if candidate.exists():
@@ -231,9 +232,13 @@ def main() -> int:
             # some platforms; keep a temporary input file and feed its contents via subprocess.
             cmd = [compiler, "--standard-json"]
             try:
-                proc = subprocess.run(cmd, cwd=project_root, input=json.dumps(standard_input),
-                    text=True, capture_output=True, timeout=args.timeout, check=False,
-                    env={**os.environ, "FORCE_COLOR": "0", "NO_COLOR": "1"})
+                # solcjs reads stdin synchronously; feeding a pipe can raise EAGAIN on Linux.
+                with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as input_file:
+                    input_file.write(json.dumps(standard_input))
+                    input_file.seek(0)
+                    proc = subprocess.run(cmd, cwd=project_root, stdin=input_file,
+                        text=True, capture_output=True, timeout=args.timeout, check=False,
+                        env={**os.environ, "FORCE_COLOR": "0", "NO_COLOR": "1"})
                 raw = proc.stdout or ""
                 obj = read_json_output(raw)
                 stderr = proc.stderr or ""
