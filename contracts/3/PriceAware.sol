@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.0;
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "./RoleAware.sol";
 import "./MarginRouter.sol";
@@ -34,7 +35,7 @@ abstract contract PriceAware is Ownable, RoleAware {
     uint256 public UPDATE_MAX_PEG_AMOUNT = 50_000;
     uint256 public UPDATE_MIN_PEG_AMOUNT = 1_000;
 
-    constructor(address _peg) Ownable() {
+    constructor(address _peg) Ownable(msg.sender) {
         peg = _peg;
     }
 
