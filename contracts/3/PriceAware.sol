@@ -3,7 +3,7 @@ pragma solidity ^0.8.0;
 
 import "./RoleAware.sol";
 import "./MarginRouter.sol";
-import "../libraries/UniswapStyleLib.sol";
+import "./UniswapStyleLib.sol";
 
 /// Stores how many of token you could get for 1k of peg
 struct TokenPrice {
