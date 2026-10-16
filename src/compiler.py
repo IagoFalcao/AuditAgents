@@ -207,7 +207,7 @@ def main() -> int:
                     key = current.relative_to(module_root).as_posix()
                 source_text = current.read_text(encoding="utf-8", errors="replace")
                 all_sources[key] = {"content": source_text}
-                for imported in re.findall(r'import\s+(?:[^"\']*?\s+from\s+)?["\']([^"\']+)["\']\s*;', source_text):
+                for imported in re.findall(r"""import\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']\s*;""", source_text):
                     if imported.startswith("."):
                         candidate = (current.parent / imported).resolve()
                         if candidate.exists():
