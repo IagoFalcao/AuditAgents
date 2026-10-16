@@ -199,13 +199,14 @@ def main() -> int:
                 if current in visited or not current.is_file() or current.suffix != ".sol":
                     continue
                 visited.add(current)
-                try:
-                    key = current.relative_to(ROOT).as_posix()
-                except ValueError:
-                    module_root = next((m for m in modules_roots if current.is_relative_to(m)), None)
-                    if module_root is None:
-                        continue
+                module_root = next((m for m in modules_roots if current.is_relative_to(m)), None)
+                if module_root is not None:
                     key = current.relative_to(module_root).as_posix()
+                else:
+                    try:
+                        key = current.relative_to(ROOT).as_posix()
+                    except ValueError:
+                        continue
                 source_text = current.read_text(encoding="utf-8", errors="replace")
                 all_sources[key] = {"content": source_text}
                 for imported in re.findall(r"""import\s+(?:[^;]*?\s+from\s+)?["']([^"']+)["']\s*;""", source_text):
