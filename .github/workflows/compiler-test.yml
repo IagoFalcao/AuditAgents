@@ -6,6 +6,8 @@ on:
     paths:
       - "src/compiler.py"
       - "contracts/3/**"
+      - "contracts/13/**"
+      - "contracts/22/**"
       - "hhat/**"
       - ".github/workflows/compiler-test.yml"
   workflow_dispatch:
@@ -43,10 +45,28 @@ jobs:
         working-directory: hhat
         run: npm install --no-save --package-lock=false solc@0.8.34
 
-      - name: Run compiler across contracts/3
+      - name: Install dependencies for imported projects when present
+        shell: bash
+        run: |
+          for project in contracts/13 contracts/22; do
+            if [ -f "$project/package-lock.json" ]; then
+              echo "Installing dependencies for $project"
+              npm ci --prefix "$project"
+            elif [ -f "$project/package.json" ]; then
+              echo "Installing dependencies for $project"
+              npm install --prefix "$project" --no-audit --no-fund
+            else
+              echo "No package manifest in $project; will use available solcjs fallback"
+            fi
+          done
+
+      - name: Run compiler across all configured contract trees
         id: compile
         continue-on-error: true
-        run: python src/compiler.py --contracts contracts/3 --output compilation_results
+        run: |
+          python src/compiler.py \
+            --contracts contracts/3 contracts/13/contracts contracts/22/contracts \
+            --output compilation_results
 
       - name: Upload compilation reports and artifacts
         if: always()
