@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.0;
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -13,7 +14,7 @@ contract Fund is RoleAware, Ownable {
     /// wrapped ether
     address public immutable WETH;
 
-    constructor(address _WETH, address _roles) Ownable() RoleAware(_roles) {
+    constructor(address _WETH, address _roles) Ownable(msg.sender) RoleAware(_roles) {
         WETH = _WETH;
     }
 
