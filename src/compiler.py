@@ -193,9 +193,23 @@ def main() -> int:
             roots = [project_root, ROOT]
             for root in roots:
                 for p in root.rglob("*.sol"):
-                    if "node_modules" in p.parts or ".git" in p.parts or "compilation_results" in p.parts:
+                    if ".git" in p.parts or "compilation_results" in p.parts:
                         continue
-                    key = source_name(p, root)
+                    try:
+                        key = source_name(p, root)
+                    except ValueError:
+                        continue
+                    all_sources.setdefault(key, {"content": p.read_text(encoding="utf-8", errors="replace")})
+            # Package imports are addressed as "@scope/package/..." by solc. Add each
+            # project's dependencies under that import key instead of "node_modules/...".
+            for modules_root in (project_root / "node_modules", ROOT / "hhat" / "node_modules"):
+                if not modules_root.is_dir():
+                    continue
+                for p in modules_root.rglob("*.sol"):
+                    try:
+                        key = p.relative_to(modules_root).as_posix()
+                    except ValueError:
+                        continue
                     all_sources.setdefault(key, {"content": p.read_text(encoding="utf-8", errors="replace")})
             selected_key = source_name(source, project_root)
             if selected_key not in all_sources:
