@@ -2,7 +2,7 @@
 pragma solidity ^0.8.0;
 
 import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
-import "../libraries/UniswapStyleLib.sol";
+import "./UniswapStyleLib.sol";
 
 import "./RoleAware.sol";
 import "./Fund.sol";
