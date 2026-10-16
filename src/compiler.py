@@ -186,41 +186,46 @@ def main() -> int:
                 "message": "No solc/solcjs found. Install project dependencies or provide a compiler on PATH."})
         else:
             record["compiler"] = "solc" if Path(compiler).name == "solc" else "solcjs"
-            # Compile one source unit with standard JSON, while resolving imports from its project
-            # and repository roots. The full source set is supplied so relative and package imports
-            # can resolve without mutating source files.
+            # Build only the transitive import closure for this source. Feeding every
+            # repository contract to solc at once makes unrelated pragmas/errors contaminate
+            # otherwise independent compilations.
             all_sources: dict[str, dict[str, str]] = {}
-            roots = [project_root, ROOT]
-            for root in roots:
-                for p in root.rglob("*.sol"):
-                    if ".git" in p.parts or "compilation_results" in p.parts:
-                        continue
-                    try:
-                        key = source_name(p, root)
-                    except ValueError:
-                        continue
-                    all_sources.setdefault(key, {"content": p.read_text(encoding="utf-8", errors="replace")})
-            # Package imports are addressed as "@scope/package/..." by solc. Add each
-            # project's dependencies under that import key instead of "node_modules/...".
-            for modules_root in (project_root / "node_modules", ROOT / "hhat" / "node_modules"):
-                if not modules_root.is_dir():
+            modules_roots = [project_root / "node_modules", ROOT / "hhat" / "node_modules"]
+            pending = [source.resolve()]
+            visited: set[Path] = set()
+            while pending:
+                current = pending.pop()
+                if current in visited or not current.is_file() or current.suffix != ".sol":
                     continue
-                for p in modules_root.rglob("*.sol"):
-                    try:
-                        key = p.relative_to(modules_root).as_posix()
-                    except ValueError:
+                visited.add(current)
+                try:
+                    key = current.relative_to(ROOT).as_posix()
+                except ValueError:
+                    module_root = next((m for m in modules_roots if current.is_relative_to(m)), None)
+                    if module_root is None:
                         continue
-                    all_sources.setdefault(key, {"content": p.read_text(encoding="utf-8", errors="replace")})
-            selected_key = source_name(source, project_root)
-            if selected_key not in all_sources:
-                selected_key = source_name(source, ROOT)
+                    key = current.relative_to(module_root).as_posix()
+                source_text = current.read_text(encoding="utf-8", errors="replace")
+                all_sources[key] = {"content": source_text}
+                for imported in re.findall(r'import\\s+(?:[^"\\']*?\\s+from\\s+)?["\\']([^"\\']+)["\\']\\s*;', source_text):
+                    if imported.startswith("."):
+                        candidate = (current.parent / imported).resolve()
+                        if candidate.exists():
+                            pending.append(candidate)
+                    else:
+                        for module_root in modules_roots:
+                            candidate = (module_root / imported).resolve()
+                            if candidate.exists():
+                                pending.append(candidate)
+                                break
+            selected_key = source.relative_to(ROOT).as_posix()
             standard_input = {
                 "language": "Solidity",
                 "sources": all_sources,
                 "settings": {"optimizer": {"enabled": True, "runs": 200},
                     "outputSelection": {"*": {"*": ["abi", "metadata", "evm.bytecode.object",
                         "evm.deployedBytecode.object", "evm.methodIdentifiers", "storageLayout"],
-                        "": ["ast"]}}
+                        "": ["ast"]}}}
             }
             # Use standard JSON through stdin. solcjs has a known stdin truncation issue on
             # some platforms; keep a temporary input file and feed its contents via subprocess.
