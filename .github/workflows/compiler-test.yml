@@ -1,0 +1,60 @@
+name: Solidity compiler integration test
+
+on:
+  push:
+    branches: [fuzzing]
+    paths:
+      - "src/compiler.py"
+      - "contracts/3/**"
+      - "hhat/**"
+      - ".github/workflows/compiler-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout fuzzing branch
+        uses: actions/checkout@v4
+        with:
+          ref: fuzzing
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: hhat/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Hardhat dependencies
+        working-directory: hhat
+        run: npm ci
+
+      - name: Run compiler across contracts/3
+        id: compile
+        continue-on-error: true
+        run: python src/compiler.py --contracts contracts/3 --output compilation_results
+
+      - name: Upload compilation reports and artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auditagents-compilation-results
+          path: compilation_results/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Fail workflow if any contract failed
+        if: steps.compile.outcome == 'failure'
+        run: |
+          echo "At least one contract failed compilation. Download the compilation report artifact for details."
+          exit 1
