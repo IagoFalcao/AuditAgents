@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.0;
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
 import "./UniswapStyleLib.sol";
@@ -60,7 +61,7 @@ contract MarginRouter is RoleAware, IncentivizedHolder, Ownable {
         _;
     }
 
-    constructor(address _WETH, address _roles) RoleAware(_roles) {
+    constructor(address _WETH, address _roles) RoleAware(_roles) Ownable(msg.sender) {
         WETH = _WETH;
     }
 
