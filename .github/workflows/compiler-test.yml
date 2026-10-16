@@ -39,6 +39,10 @@ jobs:
         working-directory: hhat
         run: npm ci
 
+      - name: Install standalone Solidity compiler fallback
+        working-directory: hhat
+        run: npm install --no-save --package-lock=false solc@0.8.34
+
       - name: Run compiler across contracts/3
         id: compile
         continue-on-error: true
