@@ -8,7 +8,7 @@ contract Roles is Ownable {
     mapping(address => mapping(uint256 => bool)) public roles;
     mapping(uint256 => address) public mainCharacters;
 
-    constructor() Ownable() {
+    constructor() Ownable(msg.sender) {
         // token activation from the get-go
         roles[msg.sender][9] = true;
     }
