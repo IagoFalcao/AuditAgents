@@ -234,13 +234,16 @@ def main() -> int:
             cmd = [compiler, "--standard-json"]
             try:
                 # solcjs reads stdin synchronously; feeding a pipe can raise EAGAIN on Linux.
-                with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as input_file:
+                with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as input_file, \
+                     tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as output_file:
                     input_file.write(json.dumps(standard_input))
                     input_file.seek(0)
                     proc = subprocess.run(cmd, cwd=project_root, stdin=input_file,
-                        text=True, capture_output=True, timeout=args.timeout, check=False,
+                        stdout=output_file, stderr=subprocess.PIPE, text=True,
+                        timeout=args.timeout, check=False,
                         env={**os.environ, "FORCE_COLOR": "0", "NO_COLOR": "1"})
-                raw = proc.stdout or ""
+                    output_file.seek(0)
+                    raw = output_file.read()
                 obj = read_json_output(raw)
                 stderr = proc.stderr or ""
                 record["attempts"].append({"compiler": record["compiler"], "command": cmd,
