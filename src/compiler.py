@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Compile every Solidity file in contracts/3 and save per-file results/artifacts.
+"""Compile Solidity sources from contracts/3 and optional imported project trees.
 
-Run from any directory:
-    python src/compiler.py
-Optional:
-    python src/compiler.py --contracts contracts/3 --output compilation_results
+Supported layouts:
+  contracts/3/**/*.sol
+  contracts/13/contracts/**/*.sol
+  contracts/22/contracts/**/*.sol
+
+The script tries each project's own Hardhat config first, then compiles each source
+with the project's local solc/solcjs using standard JSON. Raw compiler diagnostics
+and successful compiler outputs (ABI, bytecode, AST, metadata, storage layout where
+supported) are written under compilation_results/.
 """
 from __future__ import annotations
 
@@ -20,35 +25,25 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_TARGETS = ("contracts/3", "contracts/13/contracts", "contracts/22/contracts")
 
 
-def run_command(command: list[str], cwd: Path, timeout: int = 300) -> dict[str, Any]:
-    started = time.time()
+def run_command(command: list[str], cwd: Path, timeout: int) -> dict[str, Any]:
+    start = time.time()
     try:
-        proc = subprocess.run(
-            command, cwd=cwd, text=True, capture_output=True, timeout=timeout,
-            check=False, env={**os.environ, "FORCE_COLOR": "0"},
-        )
-        return {
-            "command": command, "returncode": proc.returncode,
-            "stdout": proc.stdout, "stderr": proc.stderr,
-            "duration_seconds": round(time.time() - started, 3),
-            "timed_out": False,
-        }
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "command": command, "returncode": None,
-            "stdout": exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""),
-            "stderr": exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or ""),
-            "duration_seconds": round(time.time() - started, 3),
-            "timed_out": True,
-        }
-    except OSError as exc:
-        return {
-            "command": command, "returncode": None, "stdout": "",
-            "stderr": str(exc), "duration_seconds": round(time.time() - started, 3),
-            "timed_out": False,
-        }
+        p = subprocess.run(command, cwd=cwd, text=True, capture_output=True, timeout=timeout,
+                           check=False, env={**os.environ, "FORCE_COLOR": "0", "NO_COLOR": "1"})
+        return {"command": command, "returncode": p.returncode, "stdout": p.stdout,
+                "stderr": p.stderr, "duration_seconds": round(time.time()-start, 3),
+                "timed_out": False}
+    except subprocess.TimeoutExpired as e:
+        return {"command": command, "returncode": None,
+                "stdout": e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""),
+                "stderr": e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or ""),
+                "duration_seconds": round(time.time()-start, 3), "timed_out": True}
+    except OSError as e:
+        return {"command": command, "returncode": None, "stdout": "", "stderr": str(e),
+                "duration_seconds": round(time.time()-start, 3), "timed_out": False}
 
 
 def write_json(path: Path, data: Any) -> None:
@@ -56,246 +51,239 @@ def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def extract_diagnostics(*texts: str) -> list[dict[str, Any]]:
-    """Extract Solidity/Hardhat JSON diagnostics when present, preserving raw logs too."""
-    diagnostics: list[dict[str, Any]] = []
-    for text in texts:
-        # solc standard-json output can have non-JSON text before its JSON payload.
-        for match in re.finditer(r'\{\s*"errors"\s*:', text):
-            try:
-                obj, _ = json.JSONDecoder().raw_decode(text[match.start():])
-            except json.JSONDecodeError:
-                continue
-            for item in obj.get("errors", []):
-                diagnostics.append({
-                    "severity": item.get("severity", "error"),
-                    "error_code": item.get("errorCode"),
-                    "type": item.get("type"),
-                    "message": item.get("message", ""),
-                    "formatted_message": item.get("formattedMessage", ""),
-                    "source_location": item.get("sourceLocation"),
-                })
-            if diagnostics:
-                break
-    return diagnostics
+def read_json_output(text: str) -> dict[str, Any] | None:
+    # solcjs may print a non-JSON SMT warning before standard-json output.
+    for m in re.finditer(r"\{\s*\"(?:errors|sources|contracts)\"\s*:", text):
+        try:
+            value, _ = json.JSONDecoder().raw_decode(text[m.start():])
+            if isinstance(value, dict):
+                return value
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
-def contract_name_from_source(path: Path) -> str:
+def diagnostics_from(obj: dict[str, Any] | None, fallback: str = "") -> list[dict[str, Any]]:
+    if obj and isinstance(obj.get("errors"), list):
+        return [{"severity": e.get("severity", "error"), "error_code": e.get("errorCode"),
+                 "type": e.get("type"), "message": e.get("message", ""),
+                 "formatted_message": e.get("formattedMessage", ""),
+                 "source_location": e.get("sourceLocation")} for e in obj["errors"]]
+    return ([{"severity": "error", "message": fallback}] if fallback else [])
+
+
+def source_name(path: Path, project_root: Path) -> str:
     try:
-        source = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return path.stem
-    # Used only as a fallback when an artifact cannot be located.
-    match = re.search(r'\b(?:contract|interface|library)\s+(\w+)', source)
-    return match.group(1) if match else path.stem
+        return path.relative_to(project_root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def find_project_root(source: Path, repo_root: Path) -> Path:
+    # Project roots with their own package/config files take precedence.
+    for parent in source.parents:
+        if parent == repo_root.parent:
+            break
+        if parent in (repo_root / "contracts" / "13", repo_root / "contracts" / "22"):
+            return parent
+        if (parent / "package.json").exists() and (
+            (parent / "hardhat.config.js").exists() or (parent / "hardhat.config.ts").exists()
+            or (parent / "hardhat.config.cjs").exists()
+        ):
+            return parent
+    return repo_root
+
+
+def compiler_for(project_root: Path) -> str | None:
+    candidates = [
+        project_root / "node_modules" / ".bin" / "solcjs",
+        project_root / "node_modules" / ".bin" / "solc",
+        ROOT / "hhat" / "node_modules" / ".bin" / "solcjs",
+        ROOT / "hhat" / "node_modules" / ".bin" / "solc",
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return shutil.which("solc") or shutil.which("solcjs")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--contracts", default=str(ROOT / "contracts" / "3"),
-                        help="Directory containing Solidity sources (default: contracts/3)")
-    parser.add_argument("--output", default=str(ROOT / "compilation_results"),
-                        help="Output directory (default: compilation_results)")
-    parser.add_argument("--timeout", type=int, default=300, help="Timeout per compiler command in seconds")
-    parser.add_argument("--no-hardhat", action="store_true", help="Skip the initial Hardhat compilation")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--contracts", nargs="*", default=list(DEFAULT_TARGETS),
+                    help="One or more source directories, relative to repo root or absolute")
+    ap.add_argument("--output", default=str(ROOT / "compilation_results"))
+    ap.add_argument("--timeout", type=int, default=300)
+    ap.add_argument("--no-hardhat", action="store_true")
+    ap.add_argument("--hardhat-first", action="store_true",
+                    help="Run each discovered project's Hardhat compile before per-file fallback")
+    args = ap.parse_args()
 
-    contracts_dir = Path(args.contracts).expanduser()
-    if not contracts_dir.is_absolute():
-        contracts_dir = (Path.cwd() / contracts_dir).resolve()
-    output_dir = Path(args.output).expanduser()
-    if not output_dir.is_absolute():
-        output_dir = (Path.cwd() / output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    artifacts_dir = output_dir / "artifacts"
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    output = Path(args.output).expanduser()
+    if not output.is_absolute():
+        output = (Path.cwd() / output).resolve()
+    artifact_root = output / "artifacts"
+    output.mkdir(parents=True, exist_ok=True)
+    artifact_root.mkdir(parents=True, exist_ok=True)
 
-    if not contracts_dir.is_dir():
-        print(f"ERROR: contracts directory does not exist: {contracts_dir}", file=sys.stderr)
-        return 2
-
-    sources = sorted(p for p in contracts_dir.rglob("*.sol") if p.is_file())
-    if not sources:
-        print(f"ERROR: no .sol files found in {contracts_dir}", file=sys.stderr)
-        return 2
-
-    hardhat_dir = ROOT / "hhat"
-    hardhat_artifacts = hardhat_dir / "artifacts"
-    hardhat_run: dict[str, Any] | None = None
-    if not args.no_hardhat and (hardhat_dir / "package.json").exists():
-        if (hardhat_dir / "node_modules" / ".bin" / "hardhat").exists():
-            hardhat_bin = str(hardhat_dir / "node_modules" / ".bin" / "hardhat")
-            hardhat_run = run_command([hardhat_bin, "compile", "--force"], hardhat_dir, args.timeout)
-        elif shutil.which("npx"):
-            hardhat_run = run_command(["npx", "--no-install", "hardhat", "compile", "--force"],
-                                      hardhat_dir, args.timeout)
+    target_dirs: list[Path] = []
+    for item in args.contracts:
+        p = Path(item).expanduser()
+        if not p.is_absolute():
+            p = (ROOT / p).resolve()
+        if p.is_dir():
+            target_dirs.append(p)
         else:
-            hardhat_run = {"command": ["hardhat", "compile", "--force"], "returncode": None,
-                           "stdout": "", "stderr": "Hardhat/npm not found", "duration_seconds": 0,
-                           "timed_out": False}
-    else:
-        hardhat_run = {"command": [], "returncode": None, "stdout": "",
-                       "stderr": "Hardhat skipped or hhat/package.json not found",
-                       "duration_seconds": 0, "timed_out": False}
+            print(f"[WARN] Source directory not found; skipping: {p}", file=sys.stderr)
 
-    # Index Hardhat artifacts by their compiler sourceName, preserving the complete artifact JSON.
-    hardhat_artifact_index: dict[str, list[Path]] = {}
-    if hardhat_artifacts.is_dir():
-        for artifact_path in hardhat_artifacts.rglob("*.json"):
-            if artifact_path.name.endswith(".dbg.json"):
+    sources = sorted({p.resolve() for d in target_dirs for p in d.rglob("*.sol") if p.is_file()})
+    if not sources:
+        print("ERROR: no Solidity files found. Add the source trees or pass --contracts.", file=sys.stderr)
+        return 2
+
+    projects: dict[Path, list[Path]] = {}
+    for source in sources:
+        root = find_project_root(source, ROOT)
+        projects.setdefault(root, []).append(source)
+
+    hardhat_runs: dict[str, Any] = {}
+    if not args.no_hardhat and args.hardhat_first:
+        for project_root in projects:
+            config = next((n for n in ("hardhat.config.ts", "hardhat.config.js", "hardhat.config.cjs")
+                           if (project_root / n).exists()), None)
+            if not config:
                 continue
-            try:
-                artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            hardhat_bin = project_root / "node_modules" / ".bin" / "hardhat"
+            if hardhat_bin.exists():
+                cmd = [str(hardhat_bin), "compile", "--force"]
+            elif shutil.which("npx"):
+                cmd = ["npx", "--no-install", "hardhat", "compile", "--force"]
+            else:
+                hardhat_runs[str(project_root)] = {"returncode": None, "stderr": "Hardhat/npm not available"}
                 continue
-            source_name = artifact.get("sourceName")
-            if source_name:
-                hardhat_artifact_index.setdefault(source_name.replace("\\", "/"), []).append(artifact_path)
+            run = run_command(cmd, project_root, args.timeout)
+            hardhat_runs[str(project_root)] = run
 
     results: list[dict[str, Any]] = []
-    fallback_bin = hardhat_dir / "node_modules" / ".bin" / "solcjs"
-    solc_command = str(fallback_bin) if fallback_bin.exists() else (shutil.which("solc") or shutil.which("solcjs"))
-
-    for index, source in enumerate(sources, start=1):
-        relative = source.relative_to(contracts_dir).as_posix()
-        repo_relative = source.relative_to(ROOT).as_posix() if source.is_relative_to(ROOT) else relative
+    for idx, source in enumerate(sources, 1):
+        project_root = find_project_root(source, ROOT)
+        relative_repo = source.relative_to(ROOT).as_posix() if source.is_relative_to(ROOT) else source.as_posix()
+        name = re.search(r"\b(?:contract|interface|library)\s+(\w+)", source.read_text(
+            encoding="utf-8", errors="replace"))
+        contract_name = name.group(1) if name else source.stem
+        out_dir = artifact_root / f"{idx:04d}_{source.stem}"
+        out_dir.mkdir(parents=True, exist_ok=True)
         record: dict[str, Any] = {
-            "source_path": str(source), "relative_path": repo_relative,
-            "file_name": source.name, "contract_name": contract_name_from_source(source),
-            "status": "failed", "compiler": None, "errors": [], "warnings": [],
-            "artifacts": [], "duration_seconds": 0.0,
+            "source_path": str(source), "relative_path": relative_repo,
+            "project_root": str(project_root), "file_name": source.name,
+            "contract_name": contract_name, "status": "failed", "compiler": None,
+            "errors": [], "warnings": [], "artifacts": [], "duration_seconds": 0.0,
+            "attempts": []
         }
-        started = time.time()
-
-        # Hardhat compiles the dependency graph together. Use its exact artifact when available.
-        possible_keys = {repo_relative, relative, f"contracts/{source.name}"}
-        matching: list[Path] = []
-        for key in possible_keys:
-            matching.extend(hardhat_artifact_index.get(key, []))
-        # Also match source names by basename only when unambiguous.
-        if not matching:
-            basename_matches = [
-                p for key, paths in hardhat_artifact_index.items()
-                if Path(key).name == source.name for p in paths
-            ]
-            if len(basename_matches) == 1:
-                matching = basename_matches
-
-        if matching and hardhat_run and hardhat_run.get("returncode") == 0:
-            for artifact_path in sorted(set(matching)):
-                try:
-                    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
-                    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", artifact.get("contractName", artifact_path.stem))
-                    artifact_out = artifacts_dir / f"{index:03d}_{source.stem}_{safe_name}.json"
-                    artifact["auditagents"] = {
-                        "source_path": repo_relative, "compiled_by": "hardhat",
-                        "original_artifact_path": str(artifact_path.relative_to(hardhat_dir)),
-                    }
-                    write_json(artifact_out, artifact)
-                    record["artifacts"].append(str(artifact_out.relative_to(output_dir)))
-                    record["contract_name"] = artifact.get("contractName", record["contract_name"])
-                except (OSError, json.JSONDecodeError) as exc:
-                    record["errors"].append({"message": f"Could not copy Hardhat artifact: {exc}"})
-            if record["artifacts"]:
-                record["status"] = "success"
-                record["compiler"] = "hardhat"
+        start = time.time()
+        compiler = compiler_for(project_root)
+        if not compiler:
+            record["errors"].append({"severity": "error",
+                "message": "No solc/solcjs found. Install project dependencies or provide a compiler on PATH."})
         else:
-            # Fallback: compile this file directly with solc/solcjs. --base-path resolves relative
-            # imports and --include-path enables npm dependencies; compiler errors are retained.
-            if solc_command:
-                command = [solc_command, "--base-path", str(ROOT), "--include-path",
-                           str(hardhat_dir / "node_modules"), "--abi", "--bin",
-                           "-o", str(artifacts_dir / f"solc_{index:03d}"),
-                           str(source)]
-                fallback = run_command(command, ROOT, args.timeout)
-                record["compiler"] = "solc" if Path(solc_command).name == "solc" else "solcjs"
-                record["compiler_command"] = fallback["command"]
-                record["compiler_stdout"] = fallback["stdout"]
-                record["compiler_stderr"] = fallback["stderr"]
-                record["errors"] = extract_diagnostics(fallback["stdout"], fallback["stderr"])
-                if fallback["timed_out"]:
-                    record["errors"].append({"message": f"Compiler timed out after {args.timeout} seconds"})
-                elif fallback["returncode"] != 0 and not record["errors"]:
-                    record["errors"].append({"message": fallback["stderr"].strip() or
-                                              f"Compiler exited with code {fallback['returncode']}"})
-                generated_dir = artifacts_dir / f"solc_{index:03d}"
-                if generated_dir.exists():
-                    generated_files = [p for p in sorted(generated_dir.rglob("*")) if p.is_file()]
-                    # solc/solcjs CLI emits ABI and bytecode as separate files. Consolidate
-                    # matching outputs into JSON artifacts for downstream analysis.
-                    abi_files = [p for p in generated_files if p.suffix == ".abi"]
-                    for abi_path in abi_files:
-                        stem = abi_path.name[:-4]
-                        bin_path = next((p for p in generated_files if p.name == stem + ".bin"), None)
-                        try:
-                            abi = json.loads(abi_path.read_text(encoding="utf-8"))
-                            bytecode = bin_path.read_text(encoding="utf-8").strip() if bin_path else ""
-                            artifact_json = {
-                                "contractName": stem.split("_")[-1],
-                                "sourceName": repo_relative,
-                                "abi": abi,
-                                "bytecode": {"object": bytecode},
-                                "metadata": None,
-                                "ast": None,
-                                "compiler": {"name": record["compiler"], "mode": "cli-output"},
-                                "auditagents": {
-                                    "source_path": repo_relative,
-                                    "compiled_by": record["compiler"],
-                                    "note": "CLI fallback does not expose AST/metadata; unavailable fields are null."
-                                }
-                            }
-                            consolidated = generated_dir / (re.sub(r"[^A-Za-z0-9_.-]+", "_", stem) + ".json")
-                            write_json(consolidated, artifact_json)
-                        except (OSError, json.JSONDecodeError) as exc:
-                            record["errors"].append({"message": f"Could not consolidate compiler output {abi_path.name}: {exc}"})
-                    record["artifacts"] = [
-                        str(p.relative_to(output_dir)) for p in sorted(generated_dir.rglob("*.json"))
-                    ]
-                if fallback["returncode"] == 0 and record["artifacts"]:
-                    record["status"] = "success"
+            record["compiler"] = "solc" if Path(compiler).name == "solc" else "solcjs"
+            # Compile one source unit with standard JSON, while resolving imports from its project
+            # and repository roots. The full source set is supplied so relative and package imports
+            # can resolve without mutating source files.
+            all_sources: dict[str, dict[str, str]] = {}
+            roots = [project_root, ROOT]
+            for root in roots:
+                for p in root.rglob("*.sol"):
+                    if "node_modules" in p.parts or ".git" in p.parts or "compilation_results" in p.parts:
+                        continue
+                    key = source_name(p, root)
+                    all_sources.setdefault(key, {"content": p.read_text(encoding="utf-8", errors="replace")})
+            selected_key = source_name(source, project_root)
+            if selected_key not in all_sources:
+                selected_key = source_name(source, ROOT)
+            standard_input = {
+                "language": "Solidity",
+                "sources": all_sources,
+                "settings": {"optimizer": {"enabled": True, "runs": 200},
+                    "outputSelection": {"*": {"*": ["abi", "metadata", "evm.bytecode.object",
+                        "evm.deployedBytecode.object", "evm.methodIdentifiers", "storageLayout"],
+                        "": ["ast"]}}
+            }
+            # Use standard JSON through stdin. solcjs has a known stdin truncation issue on
+            # some platforms; keep a temporary input file and feed its contents via subprocess.
+            cmd = [compiler, "--standard-json"]
+            try:
+                proc = subprocess.run(cmd, cwd=project_root, input=json.dumps(standard_input),
+                    text=True, capture_output=True, timeout=args.timeout, check=False,
+                    env={**os.environ, "FORCE_COLOR": "0", "NO_COLOR": "1"})
+                raw = proc.stdout or ""
+                obj = read_json_output(raw)
+                stderr = proc.stderr or ""
+                record["attempts"].append({"compiler": record["compiler"], "command": cmd,
+                    "returncode": proc.returncode, "stderr": stderr,
+                    "duration_seconds": None})
+                diags = diagnostics_from(obj, stderr.strip() if proc.returncode else "")
+                record["errors"] = [d for d in diags if d.get("severity") == "error"]
+                record["warnings"] = [d for d in diags if d.get("severity") == "warning"]
+                if obj:
+                    contracts_obj = obj.get("contracts", {})
+                    source_key = next((k for k in contracts_obj if k.endswith("/" + source.name)
+                                       or k == selected_key), None)
+                    contract_outputs = contracts_obj.get(source_key, {}) if source_key else {}
+                    for cname, artifact in contract_outputs.items():
+                        if not any((artifact.get(k) for k in ("abi", "metadata", "evm"))):
+                            continue
+                        artifact_data = {
+                            "contractName": cname, "sourceName": source_key or selected_key,
+                            "abi": artifact.get("abi"), "metadata": artifact.get("metadata"),
+                            "bytecode": {"object": artifact.get("evm", {}).get("bytecode", {}).get("object", "")},
+                            "deployedBytecode": {"object": artifact.get("evm", {}).get("deployedBytecode", {}).get("object", "")},
+                            "methodIdentifiers": artifact.get("evm", {}).get("methodIdentifiers"),
+                            "storageLayout": artifact.get("storageLayout"),
+                            "ast": obj.get("sources", {}).get(source_key, {}).get("ast"),
+                            "compiler": {"name": record["compiler"]},
+                            "auditagents": {"source_path": relative_repo, "project_root": str(project_root)}
+                        }
+                        out_file = out_dir / f"{cname}.json"
+                        write_json(out_file, artifact_data)
+                        record["artifacts"].append(str(out_file.relative_to(output)))
+                    if not record["errors"] and record["artifacts"]:
+                        record["status"] = "success"
+                    elif not record["errors"]:
+                        record["errors"].append({"severity": "error",
+                            "message": "Compiler returned no contract artifact for this source unit."})
                 elif not record["errors"]:
-                    record["errors"].append({"message": "Compiler did not produce artifacts"})
-            else:
-                record["compiler"] = None
-                record["errors"].append({
-                    "message": "Hardhat compilation failed and neither solc nor solcjs is installed/resolvable.",
-                    "hardhat_stderr": (hardhat_run or {}).get("stderr", ""),
-                })
-
-        record["duration_seconds"] = round(time.time() - started, 3)
+                    record["errors"].append({"severity": "error",
+                        "message": "Could not parse standard-json compiler output.",
+                        "stderr": stderr, "stdout_tail": raw[-4000:]})
+            except subprocess.TimeoutExpired as exc:
+                record["errors"].append({"severity": "error", "message": f"Compiler timed out after {args.timeout}s"})
+                record["attempts"].append({"compiler": record["compiler"], "command": cmd, "timed_out": True})
+        record["duration_seconds"] = round(time.time()-start, 3)
         results.append(record)
-        print(f"[{index}/{len(sources)}] {record['status'].upper():6} {repo_relative}"
-              + (f" ({record['compiler']})" if record["compiler"] else ""))
+        print(f"[{idx}/{len(sources)}] {record['status'].upper():7} {relative_repo} ({record['compiler'] or 'no compiler'})")
 
-    summary = {
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "repository_root": str(ROOT), "contracts_directory": str(contracts_dir),
-        "total_contract_files": len(sources),
-        "success_count": sum(r["status"] == "success" for r in results),
-        "failed_count": sum(r["status"] != "success" for r in results),
-        "hardhat": hardhat_run,
-        "results": results,
-    }
-    write_json(output_dir / "compilation_report.json", summary)
-    (output_dir / "compilation_report.txt").write_text(
-        "\n".join([
-            "Solidity compilation report",
-            f"Contracts found: {summary['total_contract_files']}",
-            f"Successful: {summary['success_count']}",
-            f"Failed: {summary['failed_count']}",
-            "",
-            *[f"[{r['status'].upper()}] {r['relative_path']} | compiler={r['compiler']} | "
-              f"errors={len(r['errors'])} | artifacts={len(r['artifacts'])}"
-              + ("\n  " + "\n  ".join(
-                  str(e.get("formatted_message") or e.get("message") or e) for e in r["errors"]
-              ) if r["errors"] else "")
-              for r in results],
-        ]) + "\n", encoding="utf-8"
-    )
-    print(f"\nReport: {output_dir / 'compilation_report.json'}")
-    print(f"Text report: {output_dir / 'compilation_report.txt'}")
-    print(f"Artifacts: {artifacts_dir}")
-    return 0 if summary["failed_count"] == 0 else 1
+    total = len(results)
+    successes = sum(r["status"] == "success" for r in results)
+    summary = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "repository_root": str(ROOT), "source_directories": [str(p) for p in target_dirs],
+        "total_contract_files": total, "success_count": successes, "failed_count": total-successes,
+        "success_rate_percent": round(successes*100/total, 2) if total else 0,
+        "hardhat_runs": hardhat_runs, "results": results}
+    write_json(output / "compilation_report.json", summary)
+    lines = ["Solidity compilation report", f"Files: {total}",
+        f"Success: {successes}", f"Failed: {total-successes}",
+        f"Success rate: {summary['success_rate_percent']}%", ""]
+    for r in results:
+        lines.append(f"[{r['status'].upper()}] {r['relative_path']} | compiler={r['compiler']} | "
+                     f"errors={len(r['errors'])} | artifacts={len(r['artifacts'])}")
+        for err in r["errors"]:
+            lines.append("  " + str(err.get("formatted_message") or err.get("message") or err))
+    (output / "compilation_report.txt").write_text("\n".join(lines)+"\n", encoding="utf-8")
+    print(f"\nSummary: {successes}/{total} successful ({summary['success_rate_percent']}%)")
+    print(f"JSON report: {output / 'compilation_report.json'}")
+    print(f"Text report: {output / 'compilation_report.txt'}")
+    print(f"Artifacts: {artifact_root}")
+    return 0 if successes == total else 1
 
 
 if __name__ == "__main__":
