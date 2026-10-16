@@ -207,7 +207,7 @@ def main() -> int:
                     key = current.relative_to(module_root).as_posix()
                 source_text = current.read_text(encoding="utf-8", errors="replace")
                 all_sources[key] = {"content": source_text}
-                for imported in re.findall(r'import\\s+(?:[^"\\']*?\\s+from\\s+)?["\\']([^"\\']+)["\\']\\s*;', source_text):
+                for imported in re.findall(r'import\s+(?:[^"\']*?\s+from\s+)?["\']([^"\']+)["\']\s*;', source_text):
                     if imported.startswith("."):
                         candidate = (current.parent / imported).resolve()
                         if candidate.exists():
@@ -245,8 +245,7 @@ def main() -> int:
                 record["warnings"] = [d for d in diags if d.get("severity") == "warning"]
                 if obj:
                     contracts_obj = obj.get("contracts", {})
-                    source_key = next((k for k in contracts_obj if k.endswith("/" + source.name)
-                                       or k == selected_key), None)
+                    source_key = selected_key if selected_key in contracts_obj else None
                     contract_outputs = contracts_obj.get(source_key, {}) if source_key else {}
                     for cname, artifact in contract_outputs.items():
                         if not any((artifact.get(k) for k in ("abi", "metadata", "evm"))):
