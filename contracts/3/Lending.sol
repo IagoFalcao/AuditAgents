@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.0;
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "./Fund.sol";
 import "./HourlyBondSubscriptionLending.sol";
@@ -32,7 +33,7 @@ contract Lending is
     /// map of available issuers
     mapping(address => bool) public activeIssuers;
 
-    constructor(address _roles) RoleAware(_roles) Ownable() {
+    constructor(address _roles) RoleAware(_roles) Ownable(msg.sender) {
         uint256 APR = 899;
         maxHourlyYieldFP = (FP32 * APR) / 100 / (24 * 365);
 
