@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.0;
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "./IsolatedMarginLiquidation.sol";
 
 contract IsolatedMarginTrading is IsolatedMarginLiquidation {
-    constructor(address _roles) RoleAware(_roles) Ownable() {}
+    constructor(address _roles) RoleAware(_roles) Ownable(msg.sender) {}
 
     /// @dev last time this account deposited
     /// relevant for withdrawal window
